@@ -1,0 +1,275 @@
+
+#include <iostream>
+#include "wifipcap/wifipcap.h"
+
+#include <stdlib.h>
+#include <set>
+#include <string>
+using namespace std;
+
+/// Cool templates
+#define ALL(x) x.begin(), x.end()
+#define PV(v,type) copy(ALL(v),ostream_iterator<type>(cout," "))
+#define IT(c) __typeof((c).begin())
+#define FOREACH(i,c) for(__typeof((c).begin()) i=(c).begin();i!=(c).end();++i)
+#define VERBOSE(x) if(param.verbose >= x) 
+#define DBG(l, x) if (DEBUG(l)) cout << x;
+#define CEIL(VARIABLE) ( (VARIABLE - (int)VARIABLE)==0 ? (int)VARIABLE : (int)VARIABLE+1 )
+#define EPSILON 1e-4
+#define GETDIR(x) (x.find_last_of("/")!=string::npos?x.substr(0,x.find_last_of("/")):".")
+//define DEBUG(t,m) printf("%s: %s\n",__FUNCTION__,m)
+#define CRITICAL 1
+#define DEBUGP(t,m, ...) printf("%s: ",__FUNCTION__);printf(m,__VA_ARGS__);if(t == CRITICAL) exit(-1)
+
+#define FATALERROR(m, ...) {fprintf(stderr, "FATAL ERROR at %s %d: ",__FILE__, __LINE__);fprintf(stderr,m, ## __VA_ARGS__);fflush(stderr);exit(EXIT_FAILURE);}
+#define PI 3.14159265
+#define RADIANS(X) ((X)*PI/180)
+#define STR_EXPAND(tok) #tok
+#define STR(tok) STR_EXPAND(tok)
+#define GETPOTIFY(g,prefix, x) x = (g)(STR(prefix) STR(x), x)
+#define GETPOTIFYSTR(g,prefix, x) x = (g)(STR(prefix) STR(x), (x).c_str())
+
+
+
+#define MAX_APS 100
+#define MAX_NODES 200
+class TestCB : public WifipcapCallbacks
+{
+private:
+  bool fcs_ok;
+  int last_rssi;
+
+  int cumm_len ;
+  long int next_update;
+  long int last_tstamp;
+  /// in seconds
+  int update_interval;
+  std::set<uint64_t> aps;
+  std::set<uint64_t> nodes;
+  std::map<std::string, int> cumm_rssi_per_ssid;
+  std::map<std::string, int> n_rssi_per_ssid;
+  
+  typedef enum e_pType
+    {
+    NONE,
+    BEACON,
+    DATATOAP,
+    DATAFROMAP,
+    } PacketType;
+  PacketType last_ptype;
+  void
+  updateBandwidthUsage(const struct timeval &t, int len)
+  {
+    cumm_len += len;
+    //    printf("%ld sec\n", t.tv_sec);
+  }
+public:
+  TestCB()
+  {
+    cumm_len = 0;
+    next_update = 0;
+    update_interval = 10;
+  }
+	/*
+    void PacketBegin(const struct timeval& t, const u_char *pkt, int len, int origlen)
+    {
+	cout << t << " {" << endl;
+    }
+    void PacketEnd()
+    {
+	cout << "}" << endl;
+    }
+	*/
+  void report(long int t)
+  {
+    int bw = cumm_len / update_interval;
+    printf("===============================\n");
+    printf("report @ %ld\n", t);
+    printf("bw use %.4f MB/s\n", 1.0*bw/1e6);
+    printf("# aps %d\n", (int) aps.size());
+    printf("# nodes %d\n", (int) nodes.size());
+    printf("rssi_x_ssid:\n");
+    FOREACH(it, cumm_rssi_per_ssid )
+      {
+	string ssid = it->first;
+	int rssi = it->second;
+	int n = n_rssi_per_ssid[ssid];
+	if( !n )
+	  continue;
+	printf(" %s %d (%d)\n", ssid.c_str(), rssi/n, n);
+      }
+    printf("===============================\n\n");
+    reset();
+    next_update = t + update_interval;
+  }
+  void registerAP(uint64_t ap_addr)
+  {
+    if( aps.size() > MAX_APS )
+      {
+	fprintf(stderr, "reached maximum number of aps - something wrong?\n");
+      }
+    else
+      aps.insert(ap_addr);
+  }
+  void rssiSSID(std::string  ssid, int rssi)
+  {
+    if( cumm_rssi_per_ssid.size() > MAX_APS )
+      {
+	fprintf(stderr, "reached maximum number of ssids - something wrong?\n");
+      }
+    else
+      {
+	cumm_rssi_per_ssid[ssid] += rssi;
+	n_rssi_per_ssid[ssid] += 1;
+	
+      }
+  }
+  void registerNode(uint64_t n_addr)
+  {
+    if( nodes.size() > MAX_NODES )
+      {
+	fprintf(stderr, "reached maximum number of nodes - something wrong?\n");
+      }
+    else
+      nodes.insert(n_addr);
+  }
+  void reset()
+  {
+    cumm_len = 0;
+    aps.clear();
+    nodes.clear();
+    cumm_rssi_per_ssid.clear();
+    n_rssi_per_ssid.clear();
+  }
+
+     void PacketBegin(const struct timeval& t, const u_char *pkt, int len, int origlen)
+  {
+    // printf("packet BEGIN\n");
+       last_ptype = NONE;
+       last_tstamp = t.tv_sec;
+       
+       updateBandwidthUsage(t, len);
+
+     }
+     void PacketEnd()
+  {
+    //       printf("packet END\n");
+       if( !next_update )
+	 {
+	   next_update = last_tstamp + update_interval;
+	 }
+       if( last_tstamp >= next_update )
+	 {
+	   report(last_tstamp);
+	 }
+  }
+
+  
+    bool Check80211FCS() { return true; }
+
+    void Handle80211DataFromAP(const struct timeval& t, const data_hdr_t *hdr, const u_char *rest, int len) 
+    {
+	if (!fcs_ok) {
+	  //registerAP(hdr->sa.val);
+	  registerNode(hdr->da.val);
+	    // cout << "  " << "802.11 data:\t" 
+	    // 	 << hdr->sa << " -> " 
+	    // 	 << hdr->da << "\t" 
+	    // 	 << len << endl;
+	}
+    }
+    void Handle80211DataToAP(const struct timeval& t, const data_hdr_t *hdr, const u_char *rest, int len) 
+    {
+	if (!fcs_ok) {
+	  //registerAP(hdr->da.val);
+	  registerNode(hdr->sa.val);
+	    // cout << "  " << "802.11 data:\t" 
+	    // 	 << hdr->sa << " -> " 
+	    // 	 << hdr->da << "\t" 
+	    // 	 << len << endl;
+	}
+    }
+
+    void Handle80211(const struct timeval& t, u_int16_t fc, const MAC& sa, const MAC& da, const MAC& ra, const MAC& ta, bool fcs_ok) {
+	this->fcs_ok = fcs_ok;
+    }
+
+	void HandleEthernet(const struct timeval& t, const ether_hdr_t *hdr, const u_char *rest, int len) {
+	  //		cout << " Ethernet: " << hdr->sa << " -> " << hdr->da << endl;
+	}
+    
+    void Handle80211MgmtProbeRequest(const struct timeval& t, const mgmt_header_t *hdr, const mgmt_body_t *body)
+    {
+	// if (!fcs_ok) {
+	//     cout << "  " << "802.11 mgmt:\t" 
+	// 	 << hdr->sa << "\tprobe\t\"" 
+	// 	 << body->ssid.ssid << "\"" << endl;
+	// }
+    }
+
+    void Handle80211MgmtBeacon(const struct timeval& t, const mgmt_header_t *hdr, const mgmt_body_t *body)
+    {
+	if (!fcs_ok) {
+	  qregisterAP(hdr->sa.val);
+	    // cout << "  " << "802.11 mgmt:\t" 
+	    // 	 << hdr->sa << "\tbeacon\t\"" 
+	    // 	 << body->ssid.ssid << "\"" << endl;
+	    string ssid_str = (const char *)body->ssid.ssid;
+	    //	    printf("ssid %s\n", ssid_str.c_str());
+	    rssiSSID(ssid_str, last_rssi);
+	}
+    }
+
+    void HandleTCP(const struct timeval& t, const ip4_hdr_t *ip4h, const ip6_hdr_t *ip6h, const tcp_hdr_t *hdr, const u_char *options, int optlen, const u_char *rest, int len)
+    {
+	// if (ip4h && hdr)
+	//   {
+	//     cout << "  " << "tcp/ip:     \t" 
+	// 	 << ip4h->src << ":" << hdr->sport << " -> " 
+	// 	 << ip4h->dst << ":" << hdr->dport 
+	// 	 << "\t" << ip4h->len << endl;
+	//   } else
+	//   {
+	//     // cout << "  " << "tcp/ip:     \t" << "[truncated]" << endl;
+	//   }
+    }   
+
+	void HandleUDP(const struct timeval& t, const ip4_hdr_t *ip4h, const ip6_hdr_t *ip6h, const udp_hdr_t *hdr, const u_char *rest, int len)
+	{
+		// if (ip4h && hdr)
+		//   {
+		//     // cout << "  " << "udp/ip:     \t" 
+		//     // 	 << ip4h->src << ":" << hdr->sport << " -> " 
+		//     // 	 << ip4h->dst << ":" << hdr->dport 
+		//     // 	 << "\t" << ip4h->len << endl;
+		//   }
+		// else
+		//   {
+		//     //cout << " " << "udp/ip:     \t" << "[truncated]" << endl;
+		//   }
+	}
+      void HandleRadiotap(const struct timeval& t, radiotap_hdr *hdr, const u_char *rest, int len)
+  {
+    if( hdr->has_signal_dbm )
+      {
+	//	printf("rssi %d dbm\n ", hdr->signal_dbm);
+	last_rssi = hdr->signal_dbm;
+      }
+
+    
+
+  }
+};
+
+/**
+ * usage: test <pcap_trace_file>
+ */
+int main(int argc, char **argv)
+{
+
+  
+  bool live = argc == 3 && atoi(argv[2]) == 1;
+    Wifipcap *wcap = new Wifipcap(argv[1], live);
+    wcap->Run(new TestCB());
+    return 0;
+}
