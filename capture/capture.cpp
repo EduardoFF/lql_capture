@@ -11,6 +11,7 @@
 #include <fstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <unistd.h>
 //#include "protectedmutex.h"
 
 using namespace std;
@@ -38,7 +39,6 @@ using namespace std;
 #define GETPOTIFYSTR(g,prefix, x) x = (g)(STR(prefix) STR(x), (x).c_str())
 
 
-
 #define MAX_APS 100
 #define MAX_NODES 200
 class TestCB : public WifipcapCallbacks
@@ -58,6 +58,7 @@ private:
   std::set<uint64_t> nodes;
   std::map<std::string, int> cumm_rssi_per_ssid;
   std::map<std::string, int> n_rssi_per_ssid;
+  //  int update_pos_
   /*
      * Mutex to control the access to the listAllNodes
      */
@@ -107,16 +108,34 @@ public:
     (( TestCB *) ptr)->UDPThreadFunc();
     return NULL;
   }
+  static void * ReportThreadEntryFunc(void * ptr) 
+  {
+    (( TestCB *) ptr)->ReportThreadFunc();
+    return NULL;
+  }
 
   void updatePos(double x, double y)
   {
     pthread_mutex_lock(&m_mutex);
-    printf("got pos %.2f %.2f\n", x,y);
+    //printf("got pos %.2f %.2f\n", x,y);
     m_x = x;
-    m_y;
+    m_y = y;
     
     pthread_mutex_unlock(&m_mutex);
   }
+
+  void
+  ReportThreadFunc()
+  {
+    for(;;)
+      {
+	long int t = time(NULL);
+	report(t);
+	sleep(update_interval);
+      }
+    
+  }
+
   void
   UDPThreadFunc()
   {
@@ -159,7 +178,15 @@ public:
 	}
    }
   }
-  
+
+    bool
+  startReportThread()
+  {
+    //  printf("running\n");
+    //    pthread_mutex_init(&m_mutex, NULL);
+    int status = pthread_create(&m_thread, NULL, ReportThreadEntryFunc, this);
+    return (status == 0);
+  }
   bool
   runUDPServer()
   {
@@ -171,9 +198,15 @@ public:
   void report(long int t)
   {
     int bw = cumm_len / update_interval;
+    double x,y;
+    pthread_mutex_lock(&m_mutex);
+    x = m_x;
+    y = m_y;
+    pthread_mutex_unlock(&m_mutex);
+
     printf("===============================\n");
     fflush(stdout);
-    printf("report @ %ld\n", t);
+    printf("report @ %ld (%.2f, %.2f)\n", t, x, y);
     printf("bw %.4f MB/s\n", 1.0*bw/1e6);
     printf("# aps %d\n", (int) aps.size());
     printf("# nodes %d\n", (int) nodes.size());
@@ -196,19 +229,18 @@ public:
     stringstream fs;
     fs << "/tmp/" << m_id << "_" << t <<".dat";
     ofstream of(fs.str().c_str());
-    double x,y;
-    pthread_mutex_lock(&m_mutex);
-    x = m_x;
-    y = m_y;
-    pthread_mutex_unlock(&m_mutex);
-    of << m_id << " " << x << " " << y
+    of << m_id << " " << t << " " << x << " " << y
        << " " << 1.0*bw/1e6
        << " " << (int) aps.size()
        << " " << (int) nodes.size()
        << " " << n_rssi << " " << rssi_str.str() << endl;
     of.close();
     stringstream cmd;
-    cmd << "scp -q " << fs.str() << " feo@195.176.38.35:lql/";
+#ifdef COMPILE_FOOTBOT
+    cmd << "scp -i ~/.ssh/id_rsa " << fs.str() << " feo@195.176.38.35:lql/ &";
+#else
+    cmd << "scp -q " << fs.str() << " feo@195.176.38.35:lql/ &";
+#endif
     int ret = system(cmd.str().c_str());
     //    printf("system returned %d\n", ret);
     if( ret != 0 )
@@ -279,7 +311,7 @@ public:
 	 }
        if( last_tstamp >= next_update )
 	 {
-	   report(last_tstamp);
+	   //report(last_tstamp);
 	 }
   }
 
@@ -422,6 +454,8 @@ int main(int argc, char **argv)
 
     TestCB *testCB = new TestCB(id,x,y);
     testCB->runUDPServer();
+    testCB->startReportThread();
+    
     wcap->Run(testCB);
     return 0;
 }
